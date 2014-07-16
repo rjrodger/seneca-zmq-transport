@@ -216,7 +216,11 @@ module.exports = function( options ) {
       }
     })
 
-    var client = function( args, done ) {
+    function match() {
+      return true
+    }
+
+    function send(args, done) {
       var outmsg = {
         id:   nid(),
         kind: 'act',
@@ -240,7 +244,7 @@ module.exports = function( options ) {
       var pins = _.isArray(args.pin) ? args.pin : [args.pin]
       _.each( seneca.findpins( pins ), function(pin){
         var pinstr = options.msgprefix+util.inspect(pin)
-        seneca.add(pin,client)
+        seneca.add(pin,send)
         //zmq_in.subscribe(pinstr)
       })
     }
@@ -251,7 +255,10 @@ module.exports = function( options ) {
 
     seneca.log.info('client', 'pubsub', 'zmq', listenpoint, clientpoint, seneca.toString())
 
-    done(null,client)
+    done(null, {
+      match: match,
+      send: send
+    })
   }
 
 
