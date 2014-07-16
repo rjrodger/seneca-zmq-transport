@@ -1,4 +1,4 @@
 require('seneca')()
   .use('foo')
-  .use('..')
+  .use(require('../'))
   .listen( {type:'pubsub',pin:'foo:*'} )

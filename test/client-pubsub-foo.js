@@ -1,6 +1,6 @@
 require('seneca')()
   .declare('foo')
-  .use('..')
+  .use(require('../'))
   .client({type:'pubsub',pin:'foo:*'})
   .ready(function(){
     var seneca = this
