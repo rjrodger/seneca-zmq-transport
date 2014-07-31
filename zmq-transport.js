@@ -20,8 +20,8 @@ var nid = require('nid')
 module.exports = function( options ) {
   var seneca = this
   var plugin = 'zmq-transport'
-  
-  
+
+
 
   options = seneca.util.deepextend({
     msgprefix:'seneca_',
@@ -36,9 +36,10 @@ module.exports = function( options ) {
     seneca.use( 'transport' )
   }
 
+  var tu = seneca.export('transport/utils')
 
-  seneca.add({role:'transport',hook:'listen',type:'pubsub'}, hook_listen_pubsub)
-  seneca.add({role:'transport',hook:'client',type:'pubsub'}, hook_client_pubsub)
+  seneca.add({role:'transport',hook:'listen',type:'zmq'}, hook_listen_pubsub)
+  seneca.add({role:'transport',hook:'client',type:'zmq'}, hook_client_pubsub)
 
 
 
@@ -84,7 +85,7 @@ module.exports = function( options ) {
     out.type = null == out.type ? base.type : out.type
 
     if( 'direct' == out.type ) {
-      out.port = null == out.port ? base.port : out.port 
+      out.port = null == out.port ? base.port : out.port
       out.host = null == out.host ? base.host : out.host
       out.path = null == out.path ? base.path : out.path
     }
@@ -96,7 +97,7 @@ module.exports = function( options ) {
   // only support first level
   function handle_entity( raw ) {
     raw = _.isObject( raw ) ? raw : {}
-    
+
     if( raw.entity$ ) {
       return seneca.make$( raw )
     }
@@ -111,9 +112,9 @@ module.exports = function( options ) {
   }
 
 
-  
+
   var mark = '~'
-  
+
 
 
   function hook_listen_pubsub( args, done ) {
@@ -176,82 +177,97 @@ module.exports = function( options ) {
 
 
 
-  function hook_client_pubsub( args, done ) {
-    var seneca = this
+  function hook_client_pubsub( args, clientdone ) {
 
-    var listenpoint = options.pubsub.listenpoint
-    var clientpoint = options.pubsub.clientpoint
+    var seneca         = this
+    var type           = args.type
+    var client_options = seneca.util.clean(_.extend({},options[type],args))
 
-    var zmq_in  = zmq.socket('pull')
-    var zmq_out = zmq.socket('push')
+    tu.make_client( make_send, client_options, clientdone )
 
-    var callmap = {}
+    function make_send( spec, topic, send_done ) {
 
-    zmq_in.identity  = 'client-sub-'+process.id
-    zmq_out.identity = 'client-pub-'+process.id
+      var listenpoint = options.pubsub.listenpoint
+      var clientpoint = options.pubsub.clientpoint
 
-    zmq_out.bind(listenpoint, function(err){
-      if( err ) return done(err);
-    })
+      var zmq_in  = zmq.socket('pull')
+      var zmq_out = zmq.socket('push')
 
-    zmq_in.connect(clientpoint, function(err){
-      if( err ) return done(err);
-    })
+      var callmap = {}
+
+      zmq_in.identity  = 'client-sub-'+process.id
+      zmq_out.identity = 'client-pub-'+process.id
+
+      zmq_out.bind(listenpoint, function(err){
+        if( err ) return done(err);
+      })
+
+      zmq_in.connect(clientpoint, function(err){
+        if( err ) return done(err);
+      })
 
 
-    zmq_in.on('message',function(msgstr){
-      msgstr = ''+msgstr
+      zmq_in.on('message',function(msgstr){
+        msgstr = ''+msgstr
 
-      var index = msgstr.indexOf(mark)
-      var channel = msgstr.substring(0,index)
-      var data = JSON.parse(msgstr.substring(index+1))
+        var index = msgstr.indexOf(mark)
+        var channel = msgstr.substring(0,index)
+        var data = JSON.parse(msgstr.substring(index+1))
 
-      if( 'res' == data.kind ) {
-        var call = callmap[data.id]
-        if( call ) {
-          delete callmap[data.id]
+        if( 'res' == data.kind ) {
+          var call = callmap[data.id]
+          if( call ) {
+            delete callmap[data.id]
 
-          call.done( data.err ? new Error(data.err) : null, data.res )
+            call.done( data.err ? new Error(data.err) : null, data.res )
+          }
+        }
+      })
+
+      var client = function( args, done ) {
+        var outmsg = tu.prepare_request( this, args, done )
+        var outstr = tu.stringifyJSON( seneca, 'client-zmq', outmsg )
+
+        callmap[outmsg.id] = {done:done}
+
+        var actmeta = seneca.findact(args)
+        if( actmeta ) {
+          var actstr = options.msgprefix+util.inspect(actmeta.args)
+          zmq_out.send(actstr+mark+outstr)
+        }
+        else {
+          zmq_out.send(options.msgprefix+'all'+mark+outstr)
         }
       }
-    })
 
-    var client = function( args, done ) {
-      var outmsg = {
-        id:   nid(),
-        kind: 'act',
-        act:  args
+      if( args.pin ) {
+        var pins = _.isArray(args.pin) ? args.pin : [args.pin]
+        _.each( seneca.findpins( pins ), function(pin){
+          var pinstr = options.msgprefix+util.inspect(pin)
+          seneca.add(pin,client)
+          //zmq_in.subscribe(pinstr)
+        })
       }
-      var outstr = JSON.stringify(outmsg)
-      callmap[outmsg.id] = {done:done}
 
-      var actmeta = seneca.findact(args)
-      if( actmeta ) {
-        var actstr = options.msgprefix+util.inspect(actmeta.args)
-        zmq_out.send(actstr+mark+outstr)
-      }
-      else {
-        zmq_out.send(options.msgprefix+'all'+mark+outstr)
-      }
-    }
-
-
-    if( args.pin ) {
-      var pins = _.isArray(args.pin) ? args.pin : [args.pin]
-      _.each( seneca.findpins( pins ), function(pin){
-        var pinstr = options.msgprefix+util.inspect(pin)
-        seneca.add(pin,client)
-        //zmq_in.subscribe(pinstr)
+      send_done( null, function( args, done ) {
+        client.call(this,args,done);
       })
+
+      seneca.add('role:seneca,cmd:close',function( close_args, done ) {
+        var closer = this
+
+        zmq_in.close();
+        zmq_out.close();
+        closer.prior(close_args,done)
+      })
+
+
+      //zmq_in.subscribe(options.msgprefix+'all')
+
+      seneca.log.info('client', 'pubsub', 'zmq', listenpoint, clientpoint, seneca.toString())
+
     }
 
-    //zmq_in.subscribe(options.msgprefix+'all')    
-
-
-
-    seneca.log.info('client', 'pubsub', 'zmq', listenpoint, clientpoint, seneca.toString())
-
-    done(null,client)
   }
 
 
