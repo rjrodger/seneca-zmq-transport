@@ -15,35 +15,35 @@ var zmq         = require('zmq')
 var nid = require('nid')
 
 
-
-
 module.exports = function( options ) {
   var seneca = this
   var plugin = 'zmq-transport'
 
-
-
-  options = seneca.util.deepextend({
-    msgprefix:'seneca_',
-    pubsub: {
-      listenpoint: 'tcp://127.0.0.1:10201',
-      clientpoint: 'tcp://127.0.0.1:10202'
-    }
-  },options)
-
-
-  if( !seneca.hasplugin('transport' ) ) {
-    seneca.use( 'transport' )
-  }
+  var so = seneca.options()
+  
+  options = seneca.util.deepextend(
+    {
+      zmq: {
+        type:   'zmq',
+        msgprefix:'seneca_',
+        pubsub: {
+            listenpoint: 'tcp://127.0.0.1:10201',
+            clientpoint: 'tcp://127.0.0.1:10202',
+        },
+    },
+  },
+  so.transport,
+  options)
 
   var tu = seneca.export('transport/utils')
 
-  seneca.add({role:'transport',hook:'listen',type:'zmq'}, hook_listen_pubsub)
-  seneca.add({role:'transport',hook:'client',type:'zmq'}, hook_client_pubsub)
-
-
-
-
+  seneca.add({role:'transport',hook:'listen',type:'zmq'}, hook_listen_zmq)
+  seneca.add({role:'transport',hook:'client',type:'zmq'}, hook_client_zmq)
+ 
+  // Legacy patterns
+  seneca.add({role:'transport',hook:'listen',type:'pubsub'}, hook_listen_zmq)
+  seneca.add({role:'transport',hook:'client',type:'pubsub'}, hook_client_zmq)
+ 
   function parseConfig( args ) {
     var out = {}
 
@@ -117,12 +117,15 @@ module.exports = function( options ) {
 
 
 
-  function hook_listen_pubsub( args, done ) {
+  function hook_listen_zmq( args, done ) {
     var seneca = this
+    var type           = args.type
 
-    var listenpoint = options.pubsub.listenpoint
-    var clientpoint = options.pubsub.clientpoint
+    var listen_options = seneca.util.clean(_.extend({},options[type],args))
 
+    var listenpoint = listen_options.pubsub.listenpoint
+    var clientpoint = listen_options.pubsub.clientpoint
+ 
     var zmq_in  = zmq.socket('pull')
     var zmq_out = zmq.socket('push')
 
@@ -177,7 +180,7 @@ module.exports = function( options ) {
 
 
 
-  function hook_client_pubsub( args, clientdone ) {
+  function hook_client_zmq( args, clientdone ) {
 
     var seneca         = this
     var type           = args.type
@@ -187,9 +190,9 @@ module.exports = function( options ) {
 
     function make_send( spec, topic, send_done ) {
 
-      var listenpoint = options.pubsub.listenpoint
-      var clientpoint = options.pubsub.clientpoint
-
+      var listenpoint = client_options.pubsub.listenpoint
+      var clientpoint = client_options.pubsub.clientpoint
+ 
       var zmq_in  = zmq.socket('pull')
       var zmq_out = zmq.socket('push')
 
@@ -199,11 +202,11 @@ module.exports = function( options ) {
       zmq_out.identity = 'client-pub-'+process.id
 
       zmq_out.bind(listenpoint, function(err){
-        if( err ) return done(err);
+        if( err ) return send_done(err);
       })
 
       zmq_in.connect(clientpoint, function(err){
-        if( err ) return done(err);
+        if( err ) return send_done(err);
       })
 
 
@@ -269,11 +272,6 @@ module.exports = function( options ) {
     }
 
   }
-
-
-
-
-
 
   return {
     name: plugin,
