@@ -32,7 +32,9 @@
   "devDependencies": {
     "gex": "0.1.x",
     "chai": "1.8.x",
-    "mocha": "1.17.x"
+    "mocha": "1.17.x",
+    "seneca": "~0.5.20",
+    "seneca-transport-test": "~0.1.2"
   },
   "files": [
     "README.md",
