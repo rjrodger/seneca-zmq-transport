@@ -22,12 +22,11 @@ module.exports = function( options ) {
   options = seneca.util.deepextend(
     {
       zmq: {
-        type:   'zmq',
-        msgprefix:'seneca_',
-        pubsub: {
-            listenpoint: 'tcp://127.0.0.1:10201',
-            clientpoint: 'tcp://127.0.0.1:10202',
-        },
+        type:       'zmq',
+        port:       10201,
+        host:       '0.0.0.0',
+        protocol:   'tcp',
+        timeout:    Math.max( so.timeout ? so.timeout-555 : 5555, 555 )
     },
   },
   so.transport,
@@ -46,28 +45,22 @@ module.exports = function( options ) {
 
 
   function hook_listen_zmq( args, done ) {
-    var seneca = this
+    var seneca         = this
     var type           = args.type
     var listen_options = seneca.util.clean(_.extend({},options[type],args))
 
-    var listenpoint = listen_options.pubsub.listenpoint
-    var clientpoint = listen_options.pubsub.clientpoint
+    var server_port = listen_options.protocol+'://'+listen_options.host+':'+listen_options.port
  
-    var zmq_in  = zmq.socket('pull')
-    var zmq_out = zmq.socket('push')
+    var zmq_server  = zmq.socket('rep')
 
-    zmq_in.identity  = 'listen-sub-'+process.id
-    zmq_out.identity = 'listen-pub-'+process.id
+    zmq_server.identity  = 'listen-out-'+process.id
 
-    zmq_out.bind(clientpoint, function(err){
-        if( err ) return done(err);
-      })
-
-    zmq_in.connect(listenpoint, function(err){
+    zmq_server.bind(server_port, function(err){
       if( err ) return done(err);
     })
 
-    zmq_in.on('message',function(msgstr){
+
+    zmq_server.on('message',function(msgstr){
       msgstr = ''+msgstr
       var index = msgstr.indexOf(mark)
       var channel = msgstr.substring(0,index)
@@ -76,15 +69,14 @@ module.exports = function( options ) {
       tu.handle_request( seneca, data, listen_options, function(out){
         if( null == out ) return;
         var outstr = tu.stringifyJSON( seneca, 'listen-'+type, out )
-        zmq_out.send(channel+mark+outstr)
+        zmq_server.send(channel+mark+outstr)
       })
     })
 
     seneca.add('role:seneca,cmd:close',function( close_args, done ) {
       var closer = this
 
-      zmq_in.close()
-      zmq_out.close()
+      zmq_server.close()
       closer.prior(close_args,done)
     })
 
@@ -103,24 +95,17 @@ module.exports = function( options ) {
     tu.make_client( make_send, client_options, clientdone )
 
     function make_send( spec, topic, send_done ) {
-      var listenpoint = client_options.pubsub.listenpoint
-      var clientpoint = client_options.pubsub.clientpoint
+      var server_port = client_options.protocol+'://'+client_options.host+':'+client_options.port
  
-      var zmq_in  = zmq.socket('pull')
-      var zmq_out = zmq.socket('push')
+      var zmq_client  = zmq.socket('req')
 
-      zmq_in.identity  = 'client-sub-'+process.id
-      zmq_out.identity = 'client-pub-'+process.id
+      zmq_client.identity  = 'client-in-'+process.id
 
-      zmq_out.bind(listenpoint, function(err){
+      zmq_client.connect(server_port, function(err){
         if( err ) return send_done(err);
       })
 
-      zmq_in.connect(clientpoint, function(err){
-        if( err ) return send_done(err);
-      })
-
-      zmq_in.on('message',function(msgstr){
+      zmq_client.on('message',function(msgstr){
         msgstr = ''+msgstr
         var index = msgstr.indexOf(mark)
         var channel = msgstr.substring(0,index)
@@ -138,18 +123,17 @@ module.exports = function( options ) {
         var actmeta = seneca.findact(args)
         if( actmeta ) {
           var actstr = options.msgprefix+util.inspect(actmeta.args)
-          zmq_out.send(actstr+mark+outstr)
+          zmq_client.send(actstr+mark+outstr)
         }
         else {
-          zmq_out.send(options.msgprefix+'all'+mark+outstr)
+          zmq_client.send(options.msgprefix+'all'+mark+outstr)
         }
       })
 
       seneca.add('role:seneca,cmd:close',function( close_args, done ) {
         var closer = this
 
-        zmq_in.close();
-        zmq_out.close();
+        zmq_client.close();
         closer.prior(close_args,done)
       })
 
