@@ -12,252 +12,134 @@ var connect     = require('connect')
 var request     = require('request')
 var zmq         = require('zmq')
 
-var nid = require('nid')
-
-
-
 
 module.exports = function( options ) {
   var seneca = this
   var plugin = 'zmq-transport'
+
+  var so = seneca.options()
   
-  
+  options = seneca.util.deepextend(
+    {
+      zmq: {
+        type:       'zmq',
+        port:       10201,
+        host:       '0.0.0.0',
+        protocol:   'tcp',
+        timeout:    Math.max( so.timeout ? so.timeout-555 : 5555, 555 )
+    },
+  },
+  so.transport,
+  options)
 
-  options = seneca.util.deepextend({
-    msgprefix:'seneca_',
-    pubsub: {
-      listenpoint: 'tcp://127.0.0.1:10201',
-      clientpoint: 'tcp://127.0.0.1:10202'
-    }
-  },options)
+  var tu = seneca.export('transport/utils')
 
-
-  if( !seneca.hasplugin('transport' ) ) {
-    seneca.use( 'transport' )
-  }
-
-
-  seneca.add({role:'transport',hook:'listen',type:'pubsub'}, hook_listen_pubsub)
-  seneca.add({role:'transport',hook:'client',type:'pubsub'}, hook_client_pubsub)
-
-
-
-
-  function parseConfig( args ) {
-    var out = {}
-
-    var config = args.config || args
-    var base = options.direct
-
-    if( _.isArray( config ) ) {
-      var arglen = config.length
-
-      if( 0 === arglen ) {
-        out.port = base.port
-        out.host = base.host
-        out.path = base.path
-      }
-      else if( 1 === arglen ) {
-        if( _.isObject( config[0] ) ) {
-          out = config[0]
-        }
-        else {
-          out.port = parseInt(config[0])
-          out.host = base.host
-          out.path = base.path
-        }
-      }
-      else if( 2 === arglen ) {
-        out.port = parseInt(config[0])
-        out.host = config[1]
-        out.path = base.path
-      }
-      else if( 3 === arglen ) {
-        out.port = parseInt(config[0])
-        out.host = config[1]
-        out.path = config[2]
-      }
-
-    }
-    else out = config;
-
-    out.type = null == out.type ? base.type : out.type
-
-    if( 'direct' == out.type ) {
-      out.port = null == out.port ? base.port : out.port 
-      out.host = null == out.host ? base.host : out.host
-      out.path = null == out.path ? base.path : out.path
-    }
-
-    return out
-  }
-
-
-  // only support first level
-  function handle_entity( raw ) {
-    raw = _.isObject( raw ) ? raw : {}
-    
-    if( raw.entity$ ) {
-      return seneca.make$( raw )
-    }
-    else {
-      _.each( raw, function(v,k){
-        if( _.isObject(v) && v.entity$ ) {
-          raw[k] = seneca.make$( v )
-        }
-      })
-      return raw
-    }
-  }
-
-
-  
+  seneca.add({role:'transport',hook:'listen',type:'zmq'}, hook_listen_zmq)
+  seneca.add({role:'transport',hook:'client',type:'zmq'}, hook_client_zmq)
+ 
+  // Legacy patterns
+  seneca.add({role:'transport',hook:'listen',type:'pubsub'}, hook_listen_zmq)
+  seneca.add({role:'transport',hook:'client',type:'pubsub'}, hook_client_zmq)
+ 
   var mark = '~'
-  
 
 
-  function hook_listen_pubsub( args, done ) {
-    var seneca = this
+  function hook_listen_zmq( args, done ) {
+    var seneca         = this
+    var type           = args.type
+    var listen_options = seneca.util.clean(_.extend({},options[type],args))
 
-    var listenpoint = options.pubsub.listenpoint
-    var clientpoint = options.pubsub.clientpoint
+    var server_port = listen_options.protocol+'://'+listen_options.host+':'+listen_options.port
+ 
+    var zmq_server  = zmq.socket('rep')
 
-    var zmq_in  = zmq.socket('pull')
-    var zmq_out = zmq.socket('push')
+    zmq_server.identity  = 'listen-out-'+process.id
 
-    zmq_in.identity  = 'listen-sub-'+process.id
-    zmq_out.identity = 'listen-pub-'+process.id
-
-    zmq_out.bind(clientpoint)
-
-
-    zmq_in.connect(listenpoint, function(err){
+    zmq_server.bind(server_port, function(err){
       if( err ) return done(err);
     })
 
 
-
-    if( args.pin ) {
-      var pins = _.isArray(args.pin) ? args.pin : [args.pin]
-      _.each( seneca.findpins( pins ), function(pin){
-        var pinstr = options.msgprefix+util.inspect(pin)
-        //zmq_in.subscribe(pinstr)
-      })
-    }
-
-    //zmq_in.subscribe(options.msgprefix+'all')
-
-
-    zmq_in.on('message',function(msgstr){
+    zmq_server.on('message',function(msgstr){
       msgstr = ''+msgstr
       var index = msgstr.indexOf(mark)
       var channel = msgstr.substring(0,index)
-      var data = JSON.parse(msgstr.substring(index+1))
+      var data = tu.parseJSON(seneca, 'listen-'+type, msgstr.substring(index+1))
 
-      if( 'act' == data.kind ) {
-        seneca.act(data.act,function(err,res){
-          var outmsg = {
-            kind:'res',
-            id:data.id,
-            err:err?err.message:null,
-            res:res
-          }
-          var outstr = JSON.stringify(outmsg)
-          zmq_out.send(channel+mark+outstr)
-        })
-      }
+      tu.handle_request( seneca, data, listen_options, function(out){
+        if( null == out ) return;
+        var outstr = tu.stringifyJSON( seneca, 'listen-'+type, out )
+        zmq_server.send(channel+mark+outstr)
+      })
     })
 
+    seneca.add('role:seneca,cmd:close',function( close_args, done ) {
+      var closer = this
 
-    seneca.log.info('listen', 'pubsub', 'zmq', listenpoint, clientpoint, seneca.toString())
+      zmq_server.close()
+      closer.prior(close_args,done)
+    })
+
+    seneca.log.info('listen', 'open', listen_options, seneca)
 
     done()
   }
 
 
 
-  function hook_client_pubsub( args, done ) {
-    var seneca = this
+  function hook_client_zmq( args, clientdone ) {
+    var seneca         = this
+    var type           = args.type
+    var client_options = seneca.util.clean(_.extend({},options[type],args))
 
-    var listenpoint = options.pubsub.listenpoint
-    var clientpoint = options.pubsub.clientpoint
+    tu.make_client( make_send, client_options, clientdone )
 
-    var zmq_in  = zmq.socket('pull')
-    var zmq_out = zmq.socket('push')
+    function make_send( spec, topic, send_done ) {
+      var server_port = client_options.protocol+'://'+client_options.host+':'+client_options.port
+ 
+      var zmq_client  = zmq.socket('req')
 
-    var callmap = {}
+      zmq_client.identity  = 'client-in-'+process.id
 
-    zmq_in.identity  = 'client-sub-'+process.id
-    zmq_out.identity = 'client-pub-'+process.id
-
-    zmq_out.bind(listenpoint, function(err){
-      if( err ) return done(err);
-    })
-
-    zmq_in.connect(clientpoint, function(err){
-      if( err ) return done(err);
-    })
-
-
-    zmq_in.on('message',function(msgstr){
-      msgstr = ''+msgstr
-
-      var index = msgstr.indexOf(mark)
-      var channel = msgstr.substring(0,index)
-      var data = JSON.parse(msgstr.substring(index+1))
-
-      if( 'res' == data.kind ) {
-        var call = callmap[data.id]
-        if( call ) {
-          delete callmap[data.id]
-
-          call.done( data.err ? new Error(data.err) : null, data.res )
-        }
-      }
-    })
-
-    var client = function( args, done ) {
-      var outmsg = {
-        id:   nid(),
-        kind: 'act',
-        act:  args
-      }
-      var outstr = JSON.stringify(outmsg)
-      callmap[outmsg.id] = {done:done}
-
-      var actmeta = seneca.findact(args)
-      if( actmeta ) {
-        var actstr = options.msgprefix+util.inspect(actmeta.args)
-        zmq_out.send(actstr+mark+outstr)
-      }
-      else {
-        zmq_out.send(options.msgprefix+'all'+mark+outstr)
-      }
-    }
-
-
-    if( args.pin ) {
-      var pins = _.isArray(args.pin) ? args.pin : [args.pin]
-      _.each( seneca.findpins( pins ), function(pin){
-        var pinstr = options.msgprefix+util.inspect(pin)
-        seneca.add(pin,client)
-        //zmq_in.subscribe(pinstr)
+      zmq_client.connect(server_port, function(err){
+        if( err ) return send_done(err);
       })
+
+      zmq_client.on('message',function(msgstr){
+        msgstr = ''+msgstr
+        var index = msgstr.indexOf(mark)
+        var channel = msgstr.substring(0,index)
+        var input = tu.parseJSON(seneca,'client-'+type,msgstr.substring(index+1))
+
+        tu.handle_response( seneca, input, client_options )
+      })
+
+      seneca.log.debug('client', 'subscribe', topic+'_res', client_options, seneca)
+
+      send_done(null, function( args, done ) {
+        var outmsg = tu.prepare_request( this, args, done )
+        var outstr = tu.stringifyJSON( seneca, 'client-zmq', outmsg )
+
+        var actmeta = seneca.findact(args)
+        if( actmeta ) {
+          var actstr = options.msgprefix+util.inspect(actmeta.args)
+          zmq_client.send(actstr+mark+outstr)
+        }
+        else {
+          zmq_client.send(options.msgprefix+'all'+mark+outstr)
+        }
+      })
+
+      seneca.add('role:seneca,cmd:close',function( close_args, done ) {
+        var closer = this
+
+        zmq_client.close();
+        closer.prior(close_args,done)
+      })
+
     }
 
-    //zmq_in.subscribe(options.msgprefix+'all')    
-
-
-
-    seneca.log.info('client', 'pubsub', 'zmq', listenpoint, clientpoint, seneca.toString())
-
-    done(null,client)
   }
-
-
-
-
-
 
   return {
     name: plugin,
