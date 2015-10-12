@@ -18,13 +18,13 @@
   "author": "Richard Rodger (http://richardrodger.com)",
   "license": "MIT",
   "dependencies": {
-    "underscore": "1.5.x",
-    "async": "0.2.x",
-    "nid": "0.3.x",
-    "connect": "2.12.x",
-    "patrun": "0.1.x",
-    "zmq": "~2.6.0",
-    "request": "~2.33.0"
+    "underscore": "~1.8.3",
+    "async": "~1.4.2",
+    "nid": "~0.3.2",
+    "connect": "~3.4.0",
+    "patrun": "~0.5.0",
+    "zmq": "~2.13.0",
+    "request": "~2.65.0"
   },
   "peerDependencies": {
     "seneca": "*"
