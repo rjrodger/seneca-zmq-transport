@@ -4,7 +4,7 @@
   "description": "Seneca ZeroMQ transport",
   "main": "zmq-transport.js",
   "scripts": {
-    "test": "node_modules/.bin/mocha test/*.test.js"
+    "test": "node_modules/.bin/lab test/*.test.js"
   },
   "repository": {
     "type": "git",
