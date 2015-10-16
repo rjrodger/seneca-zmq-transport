@@ -1,4 +1,4 @@
 require('seneca')()
   .use('foo')
   .use('..')
-  .listen( {type:'pubsub',pin:'foo:*'} )
+  .listen( {type:'zmq',pin:'foo:*'} );
